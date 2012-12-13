@@ -1,6 +1,5 @@
 import time
 import re
-from itertools import imap
 
 from alphasign import constants
 from alphasign import packet
@@ -227,7 +226,7 @@ class BaseInterface(object):
     :returns: the parsed result, as a dict
     """
     pattern = "(?P<label>[\x20-\x7F])(?P<type_char>[ABD])(?P<locked>[UL])(?P<size>[0-9a-fA-F]{4})(?P<Q>[0-9A-Fa-f]{4})"
-    return cls._decorate_table_entry(re.match(pattern, entry).groupdict())
+    return cls.decorate_entry(re.match(pattern, entry).groupdict())
 
   @staticmethod
   def decorate_entry(entry):
