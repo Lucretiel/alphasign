@@ -145,9 +145,93 @@ class BaseInterface(object):
     pkt = packet.Packet("%s%s" % (constants.WRITE_SPECIAL, seq_str))
     self.write(pkt)
     
+  def read_raw_memory_table(self):
+    """Reads the current memory table as a raw string
+    
+    This function reads the raw memory configuration from the sign, extracts
+    the data table portion, and returns it raw. 
+    
+    :returns: raw memory layout. False if there was an error in the process.
+    """
+    memory = self.request(packet.Packet('F$'))
+    if memory == False or memory == '':
+      return False
+    
+    #TODO: checksum verification
+    
+    #This pattern extracts the table and checksum from the packet
+    pattern = "\x00+\x01000\x02E\$(?P<table>(?:[\x20-\x7F][ABD][UL][0-9A-Fa-f]{4}[0-9A-Fa-f]{4})*)\x03(?P<checksum>[0-9A-Fa-f]{4})\x04"
+    match = re.match(pattern, memory)
+    if match is not None:
+      return match.group('table')
+    else:
+      return False
+  
+  def read_memory_table(self, label=None):
+    """Reads and parses the sign's current memory table.
+    
+    This function reads and parses the sign's current memory table into a list
+    of dicts, where each dict corrosponds to an entry in the table. If the
+    label parameter is given, search the table instead, and return the
+    corrosponding entry (or None)
+    
+    :param label: The label to search for
+    :returns: The memory table, parsed into a list of dicts. If the label
+      parameter is given, returns a single entry as a dict, or None. False
+      if there was a problem reading the table.
+    """
+    table = self.read_raw_memory_table()
+    if table is False:
+        return False
+    
+    if label is None:
+        return self.parse_whole_memory_table(table)
+    else:
+        return self.search_raw_memory_table(table, label)
+  
+  #TODO: Refactor the idea of a "memory table" into a class
+  
+  ##############################################################################
+  # Helper functions for interpreting and processing memory tables             #
+  ##############################################################################
+  
   @staticmethod
-  def _decorate_table_entry(entry):
-    """Add processed attributes to a table entry retrieved from the read_memory_table function below
+  def chunk_raw_memory_table(table):
+    """Simple generator to split a raw memory table into 11-character entries
+    
+    :param table: string containing the raw memory table
+    :yields: consecutive entries from the table
+    """
+    for i in xrange(0, len(table), 11):
+      yield table[i:i+11]
+      
+  @classmethod
+  def find_raw_entry(cls, table, label):
+    """Searches for and returns the 11 character table entry corresponding to the label
+    
+    :param table: string containing the raw memory table
+    :param label: the label to search for
+    :returns: raw memory entry corresponding to the label
+    """
+    
+    for entry in cls.chunk_raw_memory_table(table):
+      if entry[0] == label:
+        return entry
+    return None
+      
+  @classmethod
+  def parse_raw_entry(cls, entry):
+    """Take a raw 11 character entry and parse it into a dict
+      
+    :param entry: the entry to parse
+    :returns: the parsed result, as a dict
+    """
+    pattern = "(?P<label>[\x20-\x7F])(?P<type_char>[ABD])(?P<locked>[UL])(?P<size>[0-9a-fA-F]{4})(?P<Q>[0-9A-Fa-f]{4})"
+    return cls._decorate_table_entry(re.match(pattern, entry).groupdict())
+
+  @staticmethod
+  def decorate_entry(entry):
+    """Add processed attributes to a table entry dict, retrieved in parse_raw_entry
     
     This function adds some processed attributes to each table entry- it adds
     a human-readable data type, parses the size into height and width for dots
@@ -176,74 +260,32 @@ class BaseInterface(object):
       result["width"] = result["size"] % 256
       
     return result
-  
-  @staticmethod
-  def _chunk_raw_memory_table(table):
-    """Simple generator to split a raw memory table into 11-character entries
+
+  @classmethod
+  def parse_raw_memory_table(cls, table):
+    """Takes a raw memory table and parses it into a list of dicts
     """
-    for i in xrange(0, len(table), 11):
-      yield table[i:i+11]
-      
-  def read_raw_memory_table(self):
-    """Reads the current memory configuration as a raw string
-    
-    This function reads the raw memory configuration from the sign, extracts
-    the data table portion, and returns it raw. 
-    
-    :returns: raw memory layout. False if there was an error in the process.
+    return [cls.parse_raw_entry(entry) for entry in cls.chunk_raw_memory_table(table)]
+
+  @classmethod
+  def find_entry(cls, table, label):
+    """Searches a raw memory table for an entry and parses the result
     """
-    memory = self.request(packet.Packet('F$'))
-    if memory == False or memory == '':
-      return False
-    
-    #TODO: checksum verification
-    
-    #This pattern extracts the table and checksum from the packet
-    pattern = "\x00+\x01000\x02E\$(?P<table>(?:[\x20-\x7F][ABD][UL][0-9A-Fa-f]{4}[0-9A-Fa-f]{4})*)\x03(?P<checksum>[0-9A-Fa-f]{4})\x04"
-    match = re.match(pattern, memory)
-    if match is not None:
-      return match.group('table')
+    entry = cls.find_raw_entry(table, label)
+    if entry is None:
+        return None
     else:
-      return False
-  
-  def read_memory_table(self, table=None, label=None):
-    """Read and parse the current memory table
+        return cls.parse_raw_entry(entry)
     
-    This function reads the current memory table and parses it into a list of
-    dicts, where each dict contains the configuration for a single file label.
-    If the table argument is given, it is used instead of reading from the sign.
-    If the label argument is given, that label's individual entry (or None) are
-    returned.
-    
-    Example: `sign.read_memory_table(sign.read_raw_memory_table())` is the same
-    as `sign.read_memory_table()`
-    
-    :param table: an optional string containing a raw memory layout, such as
-      is outputted by read_raw_memory_table()
-    :param table: an optional string with a label to search for. The function
-      will only return the entry for that label.
-    :returns: list of dicts, where each dict is the data for a single file in the table
-    """
-    
-    if table is None:
-      table = self.read_raw_memory_table()
-      
-    if table == False:
-      return False
-    
-    pattern = re.compile("(?P<label>[\x20-\x7F])(?P<type_char>[ABD])(?P<locked>[UL])(?P<size>[0-9a-fA-F]{4})(?P<Q>[0-9A-Fa-f]{4})")
-    
-    table = self._chunk_raw_memory_table(table) #table is split into 11 character entries
-    table = imap(pattern.match, table) #each entry is matched to the memory-table-entry regex
-    table = imap(lambda match: match.groupdict(), table) #the groups and their values are extracted from the match
-    table = imap(self._decorate_table_entry, table) #the group dicts are decorated, to make them more human readable
-    
-    #TODO: search the raw character string for the label directly, to avoid having to regex and decorate every entry
-    if label is not None:
-      #Find label in table. There's not yet a python find-in-iterable builtin
-      for entry in table:
-        if entry['label'] == label:
-          return entry
-      return None
-    
-    return list(table)
+    ############################################################################
+    # Method summary:
+    #   chunk_raw_memory table - takes raw table, returns raw entries
+    #   find_raw_entry - chunk, then return specific raw entry
+    #   parse_raw_entry - takes raw entry, returns parsed entry
+    #     decorate_entry - helper to parse entries
+    #   parse_raw_memory_table - chunk followed by parse
+    #   find_entry - find followed by parse
+    #
+    #   read_raw_memory_table - read raw table from sign
+    #   read_mempory_table - read followed by parse or find
+    ############################################################################
